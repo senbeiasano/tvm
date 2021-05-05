@@ -16,12 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-#pragma once
+
+#ifndef TVM_RUNTIME_VULKAN_VULKAN_COMMON_H_
+#define TVM_RUNTIME_VULKAN_VULKAN_COMMON_H_
 
 #include <tvm/runtime/c_runtime_api.h>
 #include <tvm/runtime/device_api.h>
+#include <tvm/runtime/logging.h>
 #include <tvm/runtime/packed_func.h>
-#include <tvm/support/logging.h>
 #include <vulkan/vulkan.h>
 
 #include <memory>
@@ -32,6 +34,11 @@
 namespace tvm {
 namespace runtime {
 namespace vulkan {
+
+const int kMaxPushConstantsBytes = 128;
+
+/*! \brief A mask used when we attach additional information to shaders */
+enum ShaderMetaDataFlagMask { kUseUBO = 0 };
 
 inline const char* VKGetErrorString(VkResult error) {
   switch (error) {
@@ -103,14 +110,6 @@ struct VulkanGetBufferMemoryRequirements2Functions {
   PFN_vkGetBufferMemoryRequirements2KHR vkGetBufferMemoryRequirements2KHR{nullptr};
 };
 
-struct VulkanStagingBuffer {
-  VkDevice device{nullptr};
-  VkBuffer buffer{VK_NULL_HANDLE};
-  VkDeviceMemory memory{VK_NULL_HANDLE};
-  void* host_addr{nullptr};
-  size_t size{0};
-};
-
 struct VulkanContext {
   // phyiscal device
   VkPhysicalDevice phy_device{nullptr};
@@ -143,3 +142,4 @@ struct VulkanContext {
 }  // namespace vulkan
 }  // namespace runtime
 }  // namespace tvm
+#endif  // TVM_RUNTIME_VULKAN_VULKAN_COMMON_H_

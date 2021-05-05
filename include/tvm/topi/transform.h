@@ -577,7 +577,7 @@ inline te::Tensor dynamic_strided_slice(const te::Tensor& x, const te::Tensor& b
       [&](const Array<tvm::tir::Var>& indices) {
         Array<PrimExpr> real_indices;
         for (int32_t i = 0; i < src_tensor_dim; ++i) {
-          real_indices.push_back(indices[i] * strides(i) + begin(i));
+          real_indices.push_back(indices[i] * strides(i) + tvm::min(begin(i), x->shape[i] - 1));
         }
         return x(real_indices);
       },
@@ -612,6 +612,7 @@ inline Tensor strided_slice(const Tensor& x, const Array<PrimExpr>& begin,
 
   Array<PrimExpr> out_shape;
   if (!is_static) {
+    ICHECK_EQ(strides.size(), src_tensor_dim);
     for (size_t i = 0; i < src_tensor_dim; ++i) {
       out_shape.push_back(indexdiv(end[i] - begin[i], strides[i]));
     }
@@ -1133,6 +1134,9 @@ inline Tensor gather(const Tensor& data, int axis, const Tensor& indices,
   size_t ndim_i = indices->shape.size();
   ICHECK_GE(ndim_d, 1) << "Cannot gather from a scalar.";
   ICHECK_EQ(ndim_d, ndim_i);
+  if (axis < 0) {
+    axis += ndim_d;
+  }
   ICHECK_GE(axis, 0);
   ICHECK_LT(axis, ndim_d);
   size_t indices_dim_i = static_cast<size_t>(GetConstInt(indices->shape[axis]));

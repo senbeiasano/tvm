@@ -29,7 +29,7 @@ logger = logging.getLogger("TensorRT")
 
 
 def is_tensorrt_runtime_enabled():
-    """Check if the TensorRT graph runtime is present.
+    """Check if the TensorRT graph executor is present.
     Returns
     -------
     ret: bool
@@ -140,7 +140,11 @@ def partition_for_tensorrt(
             RemoveDropoutPass(),
             transform.RemoveUnusedFunctions(),
             transform.ConvertLayout(
-                {"nn.conv2d": ["NCHW", "default"], "nn.conv3d": ["NCDHW", "default"]}
+                {
+                    "nn.conv2d": ["NCHW", "default"],
+                    "nn.conv3d": ["NCDHW", "default"],
+                    "nn.conv2d_transpose": ["NCHW", "default"],
+                }
             ),
             transform.FoldConstant(),
             transform.AnnotateTarget("tensorrt"),
@@ -262,7 +266,7 @@ _register_external_op_helper("clip")
 
 def reduce_annotate_fn(attrs, args, op_name):
     """Helper for reduce operations."""
-    if not attrs.axis or len(attrs.axis) == 0:
+    if get_tensorrt_use_implicit_batch_mode() and (not attrs.axis or len(attrs.axis) == 0):
         logger.info("%s: cannot reduce to scalar.", op_name)
         return False
     if attrs.exclude:
@@ -313,10 +317,9 @@ def add_annotate_fn(expr):  # pylint: disable=unused-variable
         for arg in args
     ]
 
-    # RelayVM + TRT doesn't support scalar addition yet.
-    for shape in shapes:
-        if len(shape) < 1:
-            return False
+    # Scalars require explicit batch mode.
+    if get_tensorrt_use_implicit_batch_mode() and any([len(shape) < 1 for shape in shapes]):
+        return False
 
     if any([x.checked_type.dtype != "float32" for x in args]):
         logger.info("Only float32 inputs are supported for TensorRT.")
@@ -324,6 +327,8 @@ def add_annotate_fn(expr):  # pylint: disable=unused-variable
     if (
         not get_tensorrt_use_implicit_batch_mode()
         and (isinstance(args[0], Constant) or isinstance(args[1], Constant))
+        and len(shapes[0]) > 0
+        and len(shapes[1]) > 0
         and shapes[0][0] == shapes[1][0]
         and shapes[0][0] != 1
         and (len(shapes[0]) > 3 or len(shapes[1]) > 3)
@@ -548,6 +553,19 @@ def concatenate_annotate_fn(expr):  # pylint: disable=unused-variable
     return True
 
 
+@_register_external_dynamic_check_func("split")
+def split_annotate_fn(expr):
+    """Check if split is supported by TensorRT."""
+
+    if any([x.checked_type.dtype != "float32" for x in expr.args]):
+        logger.info("Only float32 inputs are supported for TensorRT.")
+        return False
+    if get_tensorrt_use_implicit_batch_mode() and int(expr.attrs.axis) == 0:
+        logger.info("split: can't modify batch dimension.")
+        return False
+    return True
+
+
 @_register_external_dynamic_check_func("nn.conv2d_transpose")
 def conv2d_transpose_annotate_fn(expr):  # pylint: disable=unused-variable
     """Check if nn.conv2d_transpose is supported by TensorRT."""
@@ -611,7 +629,6 @@ def layout_transform_annotate_fn(expr):  # pylint: disable=unused-variable
 @_register_external_dynamic_check_func("reshape")
 def reshape_annotate_fn(expr):  # pylint: disable=unused-variable
     """Check if reshape is supported by TensorRT."""
-
     attrs, args = expr.attrs, expr.args
     if args[0].checked_type.dtype != "float32":
         logger.info("Only float32 inputs are supported for TensorRT.")
@@ -625,23 +642,23 @@ def reshape_annotate_fn(expr):  # pylint: disable=unused-variable
         if len(new_shape) == 0 or len(shape) == 0:
             logger.info("reshape: Can't reshape to or from scalar.")
             return False
-
         dynamic_reshape = any([isinstance(x, tvm.tir.expr.Any) for x in shape])
 
         if dynamic_reshape:
             # Make sure that the batch dim is unmodified.
             if int(new_shape[0]) < 0:
-                for shape_val, new_shape_val in enumerate(shape[1:], new_shape[1:]):
+                for shape_val, new_shape_val in zip(shape[1:], new_shape[1:]):
                     if not (
-                        isinstance(shape_val, int)
-                        and isinstance(new_shape_val, int)
+                        isinstance(shape_val, (int, tvm.tir.expr.IntImm))
+                        and isinstance(new_shape_val, (int, tvm.tir.expr.IntImm))
                         and int(shape_val) == int(new_shape_val)
                     ):
                         return False
             elif int(new_shape[0]) > 0:
+                # Currently we only allow dim[0] to be Any, so this branch will always be False
                 if not (
-                    isinstance(shape[0], int)
-                    and isinstance(new_shape[0], int)
+                    isinstance(shape[0], (int, tvm.tir.expr.IntImm))
+                    and isinstance(new_shape[0], (int, tvm.tir.expr.IntImm))
                     and int(shape[0]) == int(new_shape[0])
                 ):
                     return False
@@ -867,6 +884,11 @@ class IsComputeIntensiveGraph(ExprVisitor):
                 "nn.conv3d_transpose",
                 "nn.dense",
                 "nn.batch_matmul",
+                "sum",
+                "prod",
+                "max",
+                "min",
+                "mean",
             ]
         )
         if isinstance(call.op, tvm.tir.op.Op):
@@ -965,6 +987,7 @@ def prune_tensorrt_subgraphs(mod):
     # Create new pruned module
     new_mod = tvm.IRModule(mod.functions, mod.type_definitions)
     new_mod["main"] = SubgraphRemover(subgraphs_to_remove, mod, new_mod).visit(mod["main"])
+    new_mod = transform.RemoveUnusedFunctions()(new_mod)
     return new_mod
 
 

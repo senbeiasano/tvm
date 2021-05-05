@@ -44,6 +44,7 @@ void CodeGenCHost::Init(bool output_ssa, bool emit_asserts, std::string target_s
   emit_asserts_ = emit_asserts;
   declared_globals_.clear();
   decl_stream << "// tvm target: " << target_str << "\n";
+  decl_stream << "#define TVM_EXPORTS\n";
   decl_stream << "#include \"tvm/runtime/c_runtime_api.h\"\n";
   decl_stream << "#include \"tvm/runtime/c_backend_api.h\"\n";
   decl_stream << "#include <math.h>\n";
@@ -55,7 +56,7 @@ void CodeGenCHost::AddFunction(const PrimFunc& f) {
   auto global_symbol = f->GetAttr<String>(tvm::attr::kGlobalSymbol);
   ICHECK(global_symbol.defined())
       << "CodeGenCHost: Expect PrimFunc to have the global_symbol attribute";
-  function_names_.emplace_back(global_symbol.value());
+  function_names_.push_back(global_symbol.value());
 
   CodeGenC::AddFunction(f);
 }
@@ -73,7 +74,7 @@ void CodeGenCHost::LinkParameters(Map<String, LinkedParam> params) {
          << "        out_ret_tcode[0] = " << kTVMNullptr << ";\n"
          << "        return 0;\n";
 
-  function_names_.emplace_back(tvm::runtime::symbol::tvm_lookup_linked_param);
+  function_names_.push_back(tvm::runtime::symbol::tvm_lookup_linked_param);
   for (auto kv : params) {
     decl_stream << "\n"
                 << "#ifdef __cplusplus\n"
@@ -267,14 +268,17 @@ void CodeGenCHost::VisitExpr_(const CallNode* op, std::ostream& os) {  // NOLINT
     // NOTE: cannot rely on GetUnique for global decl_stream declarations
     // because it is reset between AddFunction().
     std::string packed_func_name = func_name + "_packed";
-    if (declared_globals_.insert(packed_func_name).second) {
-      // Still reserve the name among unique names.
-      ICHECK(GetUniqueName(packed_func_name) == packed_func_name)
-          << "Expected name " << packed_func_name << " to not be taken";
-      decl_stream << "static void* " << packed_func_name << " = NULL;\n";
+    std::string unique_name;
+    auto it = declared_globals_.find(packed_func_name);
+    if (it != declared_globals_.end()) {
+      unique_name = it->second;
+    } else {
+      unique_name = GetUniqueName(packed_func_name);
+      declared_globals_[packed_func_name] = unique_name;
+      decl_stream << "static void* " << unique_name << " = NULL;\n";
     }
-    this->PrintGetFuncFromBackend(func_name, packed_func_name);
-    this->PrintFuncCall(packed_func_name, num_args);
+    this->PrintGetFuncFromBackend(func_name, unique_name);
+    this->PrintFuncCall(unique_name, num_args);
   } else if (op->op.same_as(builtin::tvm_throw_last_error())) {
     this->PrintIndent();
     this->stream << "return -1;\n";
@@ -322,29 +326,6 @@ inline void CodeGenCHost::PrintTernaryCondExpr(const T* op, const char* compare,
      << "? (" << a_id << ") : (" << b_id << "))";
 }
 
-void CodeGenCHost::GenerateFuncRegistry() {
-  decl_stream << "#include <tvm/runtime/crt/module.h>\n";
-  stream << "static TVMBackendPackedCFunc _tvm_func_array[] = {\n";
-  for (auto f : function_names_) {
-    stream << "    (TVMBackendPackedCFunc)" << f << ",\n";
-  }
-  stream << "};\n";
-  auto registry = target::GenerateFuncRegistryNames(function_names_);
-  stream << "static const TVMFuncRegistry _tvm_func_registry = {\n"
-         << "    \"" << ::tvm::support::StrEscape(registry.data(), registry.size(), true) << "\","
-         << "    _tvm_func_array,\n"
-         << "};\n";
-}
-
-void CodeGenCHost::GenerateCrtSystemLib() {
-  stream << "static const TVMModule _tvm_system_lib = {\n"
-         << "    &_tvm_func_registry,\n"
-         << "};\n"
-         << "const TVMModule* TVMSystemLibEntryPoint(void) {\n"
-         << "    return &_tvm_system_lib;\n"
-         << "}\n";
-}
-
 runtime::Module BuildCHost(IRModule mod, Target target) {
   using tvm::runtime::Registry;
   bool output_ssa = false;
@@ -380,12 +361,10 @@ runtime::Module BuildCHost(IRModule mod, Target target) {
   if (target->GetAttr<Bool>("system-lib").value_or(Bool(false))) {
     ICHECK_EQ(target->GetAttr<String>("runtime").value_or(""), "c")
         << "c target only supports generating C runtime SystemLibs";
-    cg.GenerateFuncRegistry();
-    cg.GenerateCrtSystemLib();
   }
 
   std::string code = cg.Finish();
-  return CSourceModuleCreate(code, "c");
+  return CSourceModuleCreate(code, "c", cg.GetFunctionNames());
 }
 
 TVM_REGISTER_GLOBAL("target.build.c").set_body_typed(BuildCHost);

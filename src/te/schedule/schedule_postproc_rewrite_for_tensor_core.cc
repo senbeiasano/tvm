@@ -968,7 +968,8 @@ class TensorCoreIRMutator : public StmtExprMutator {
           scaled_extent_value = ori_extent_value / scale_factor;
         }
         PrimExpr scaled_extent = make_const(op->extent.dtype(), scaled_extent_value);
-        stmt = For(op->loop_var, op->min, scaled_extent, op->for_type, op->device_api, op->body);
+        stmt = For(op->loop_var, op->min, scaled_extent, op->kind, op->body, op->thread_binding,
+                   op->annotations);
       }
     }
     return stmt;
@@ -1088,8 +1089,8 @@ Stmt SchedulePostProcRewriteForTensorCore(Stmt stmt, Schedule schedule,
   }
 
   // Check if current runtime support GPU CUDA
-  TVMContext ctx{kDLGPU, 0};
-  auto api = tvm::runtime::DeviceAPI::Get(ctx, true);
+  Device dev{kDLGPU, 0};
+  auto api = tvm::runtime::DeviceAPI::Get(dev, true);
   if (api == nullptr) {
     return stmt;
   }

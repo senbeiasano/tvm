@@ -18,9 +18,11 @@
 """Defines a compiler integration that uses an externally-supplied Zephyr project."""
 
 import collections
+import copy
 import logging
 import multiprocessing
 import os
+import pathlib
 import re
 import tempfile
 import textwrap
@@ -55,7 +57,11 @@ class SubprocessEnv(object):
         for k, v in self.default_overrides.items():
             env[k] = v
 
-        return subprocess.check_output(cmd, env=env, **kw)
+        return subprocess.check_output(cmd, env=env, **kw, universal_newlines=True)
+
+
+class ProjectNotFoundError(Exception):
+    """Raised when the project_dir supplied to ZephyrCompiler does not exist."""
 
 
 class FlashRunnerNotSupported(Exception):
@@ -95,7 +101,24 @@ class ZephyrCompiler(tvm.micro.Compiler):
             If given, additional environment variables present when invoking west, cmake, or make.
         """
         self._project_dir = project_dir
+        if not os.path.exists(project_dir):
+            # Raise this error instead of a potentially-more-cryptic compiler error due to a missing
+            # prj.conf.
+            raise ProjectNotFoundError(
+                f"project_dir supplied to ZephyrCompiler does not exist: {project_dir}"
+            )
+
+        self._qemu = "qemu" in board
+
+        # For Zephyr boards that run emulated by default but don't have the prefix "qemu_" in their
+        # board names, a suffix "-qemu" is added by users of µTVM when specifying the board name to
+        # inform that the QEMU transporter must be used just like for the boards with the prefix.
+        # Zephyr does not recognize the suffix, so we trim it off before passing it.
+        if "-qemu" in board:
+            board = board.replace("-qemu", "")
+
         self._board = board
+
         if west_cmd is None:
             self._west_cmd = [sys.executable, "-mwest.app.main"]
         elif isinstance(west_cmd, str):
@@ -180,7 +203,7 @@ class ZephyrCompiler(tvm.micro.Compiler):
         with open(os.path.join(output, "main.c"), "w"):
             pass
 
-        # expecetd not to exist after populate_tvm_libs
+        # expected not to exist after populate_tvm_libs
         build_dir = os.path.join(output, "__tvm_build")
         os.mkdir(build_dir)
         self._subprocess_env.run(
@@ -192,6 +215,25 @@ class ZephyrCompiler(tvm.micro.Compiler):
             ["make", f"-j{num_cpus}", "VERBOSE=1", project_name], cwd=build_dir
         )
         return tvm.micro.MicroLibrary(build_dir, [f"lib{project_name}.a"])
+
+    def _print_make_statistics(self, output):
+        output = output.splitlines()
+        lines = iter(output)
+        for line in lines:
+            if line.startswith("Memory region"):
+                # print statistics header
+                _LOG.info(line)
+                _LOG.info("--------------------- ---------- ------------ ---------")
+                line = next(lines)
+                # while there is a region print it
+                try:
+                    while ":" in line:
+                        _LOG.info(line)
+                        line = next(lines)
+                    else:
+                        break
+                except StopIteration:
+                    pass
 
     def binary(self, output, objects, options=None, link_main=True, main_options=None):
         assert link_main, "Must pass link_main=True"
@@ -213,7 +255,9 @@ class ZephyrCompiler(tvm.micro.Compiler):
         cmake_args.append(f'-DTVM_LIBS={";".join(copied_libs)}')
         self._subprocess_env.run(cmake_args, cwd=output)
 
-        self._subprocess_env.run(["make"], cwd=output)
+        make_output = self._subprocess_env.run(["make"], cwd=output)
+
+        self._print_make_statistics(make_output)
 
         return tvm.micro.MicroBinary(
             output,
@@ -223,18 +267,22 @@ class ZephyrCompiler(tvm.micro.Compiler):
                 "cmake_cache": ["CMakeCache.txt"],
                 "device_tree": [os.path.join("zephyr", "zephyr.dts")],
             },
-            immobile="qemu" in self._board,
+            immobile=bool(self._qemu),
         )
 
     @property
     def flasher_factory(self):
         return compiler.FlasherFactory(
             ZephyrFlasher,
-            (self._west_cmd,),
+            (
+                self._board,
+                self._qemu,
+            ),
             dict(
                 zephyr_base=self._zephyr_base,
                 project_dir=self._project_dir,
                 subprocess_env=self._subprocess_env.default_overrides,
+                west_cmd=self._west_cmd,
             ),
         )
 
@@ -280,7 +328,8 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
 
     def __init__(
         self,
-        west_cmd,
+        board,
+        qemu,
         zephyr_base=None,
         project_dir=None,
         subprocess_env=None,
@@ -289,6 +338,7 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
         flash_args=None,
         debug_rpc_session=None,
         serial_timeouts=None,
+        west_cmd=None,
     ):
         zephyr_base = zephyr_base or os.environ["ZEPHYR_BASE"]
         sys.path.insert(0, os.path.join(zephyr_base, "scripts", "dts"))
@@ -299,6 +349,8 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
         finally:
             sys.path.pop(0)
 
+        self._board = board
+        self._qemu = qemu
         self._zephyr_base = zephyr_base
         self._project_dir = project_dir
         self._west_cmd = west_cmd
@@ -341,6 +393,7 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
     # kwargs passed to usb.core.find to find attached boards for the openocd flash runner.
     BOARD_USB_FIND_KW = {
         "nucleo_f746zg": {"idVendor": 0x0483, "idProduct": 0x374B},
+        "stm32f746g_disco": {"idVendor": 0x0483, "idProduct": 0x374B},
     }
 
     def openocd_serial(self, cmake_entries):
@@ -376,7 +429,7 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
             return flash_runner
 
         with open(cmake_entries["ZEPHYR_RUNNERS_YAML"]) as f:
-            doc = yaml.load(f)
+            doc = yaml.load(f, Loader=yaml.FullLoader)
         return doc["flash-runner"]
 
     def _get_device_args(self, cmake_entries):
@@ -392,16 +445,44 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
             f"runner {flash_runner}"
         )
 
-    def flash(self, micro_binary):
-        cmake_entries = read_cmake_cache(
-            micro_binary.abspath(micro_binary.labelled_files["cmake_cache"][0])
-        )
-        if "qemu" in cmake_entries["BOARD"]:
-            return ZephyrQemuTransport(micro_binary.base_dir, startup_timeout_sec=30.0)
+    def _zephyr_transport(self, micro_binary):
+        qemu_debugger = None
+        if self._debug_rpc_session:
+            qemu_debugger = debugger.RpcDebugger(
+                self._debug_rpc_session,
+                debugger.DebuggerFactory(
+                    QemuGdbDebugger,
+                    (micro_binary.abspath(micro_binary.debug_files[0]),),
+                    {},
+                ),
+            )
 
-        build_dir = os.path.dirname(
-            micro_binary.abspath(micro_binary.labelled_files["cmake_cache"][0])
+        return ZephyrQemuTransport(
+            micro_binary.base_dir, startup_timeout_sec=30.0, qemu_debugger=qemu_debugger
         )
+
+    def flash(self, micro_binary):
+        if self._qemu:
+            return self._zephyr_transport(micro_binary)
+
+        cmake_cache_path = micro_binary.abspath(micro_binary.labelled_files["cmake_cache"][0])
+        cmake_entries = read_cmake_cache(cmake_cache_path)
+
+        build_dir = os.path.dirname(cmake_cache_path)
+
+        # The nRF5340DK requires an additional `nrfjprog --recover` before each flash cycle.
+        # This is because readback protection is enabled by default when this device is flashed.
+        # Otherwise, flashing may fail with an error such as the following:
+        #  ERROR: The operation attempted is unavailable due to readback protection in
+        #  ERROR: your device. Please use --recover to unlock the device.
+        if (
+            self._board.startswith("nrf5340dk")
+            and self._get_flash_runner(cmake_entries) == "nrfjprog"
+        ):
+            recover_args = ["nrfjprog", "--recover"]
+            recover_args.extend(self._get_nrf_device_args())
+            self._subprocess_env.run(recover_args, cwd=build_dir)
+
         west_args = (
             self._west_cmd
             + ["flash", "--build-dir", build_dir, "--skip-rebuild"]
@@ -482,12 +563,32 @@ class ZephyrFlasher(tvm.micro.compiler.Flasher):
         )
 
 
+class QemuGdbDebugger(debugger.GdbDebugger):
+    def __init__(self, elf_file):
+        super(QemuGdbDebugger, self).__init__()
+        self._elf_file = elf_file
+
+    def popen_kwargs(self):
+        # expect self._elf file to follow the form .../zephyr/zephyr.elf
+        cmake_cache_path = pathlib.Path(self._elf_file).parent.parent / "CMakeCache.txt"
+        cmake_cache = read_cmake_cache(cmake_cache_path)
+        return {
+            "args": [
+                cmake_cache["CMAKE_GDB"],
+                "-ex",
+                "target remote localhost:1234",
+                "-ex",
+                f"file {self._elf_file}",
+            ],
+        }
+
+
 class QemuStartupFailureError(Exception):
     """Raised when the qemu pipe is not present within startup_timeout_sec."""
 
 
 class QemuFdTransport(file_descriptor.FdTransport):
-    """An FdTransport subclass that escapes written data to accomodate the QEMU monitor.
+    """An FdTransport subclass that escapes written data to accommodate the QEMU monitor.
 
     It's supposedly possible to disable the monitor, but Zephyr controls most of the command-line
     arguments for QEMU and there are too many options which implictly enable the monitor, so this
@@ -521,19 +622,20 @@ class QemuFdTransport(file_descriptor.FdTransport):
 class ZephyrQemuTransport(Transport):
     """The user-facing Zephyr QEMU transport class."""
 
-    def __init__(self, base_dir, startup_timeout_sec=5.0, **kwargs):
+    def __init__(self, base_dir, startup_timeout_sec=5.0, qemu_debugger=None, **kwargs):
         self.base_dir = base_dir
         self.startup_timeout_sec = startup_timeout_sec
         self.kwargs = kwargs
         self.proc = None
         self.fd_transport = None
         self.pipe_dir = None
+        self.qemu_debugger = qemu_debugger
 
     def timeouts(self):
         return TransportTimeouts(
             session_start_retry_timeout_sec=2.0,
             session_start_timeout_sec=self.startup_timeout_sec,
-            session_established_timeout_sec=5.0,
+            session_established_timeout_sec=5.0 if self.qemu_debugger is None else 0,
         )
 
     def open(self):
@@ -541,13 +643,26 @@ class ZephyrQemuTransport(Transport):
         self.pipe = os.path.join(self.pipe_dir, "fifo")
         self.write_pipe = os.path.join(self.pipe_dir, "fifo.in")
         self.read_pipe = os.path.join(self.pipe_dir, "fifo.out")
+
         os.mkfifo(self.write_pipe)
         os.mkfifo(self.read_pipe)
+        if self.qemu_debugger is not None:
+            if "env" in self.kwargs:
+                self.kwargs["env"] = copy.copy(self.kwargs["env"])
+            else:
+                self.kwargs["env"] = os.environ.copy()
+
+            self.kwargs["env"]["TVM_QEMU_DEBUG"] = "1"
+
         self.proc = subprocess.Popen(
             ["make", "run", f"QEMU_PIPE={self.pipe}"],
             cwd=self.base_dir,
             **self.kwargs,
         )
+
+        if self.qemu_debugger is not None:
+            self.qemu_debugger.start()
+
         # NOTE: although each pipe is unidirectional, open both as RDWR to work around a select
         # limitation on linux. Without this, non-blocking I/O can't use timeouts because named
         # FIFO are always considered ready to read when no one has opened them for writing.
@@ -562,6 +677,9 @@ class ZephyrQemuTransport(Transport):
         self.fd_transport.open()
 
     def close(self):
+        if self.qemu_debugger is not None:
+            self.qemu_debugger.stop()
+
         if self.fd_transport is not None:
             self.fd_transport.child_transport.write_monitor_quit()
             self.proc.wait()
@@ -600,7 +718,7 @@ class ZephyrDebugger(debugger.GdbDebugger):
         env = dict(os.environ)
         env["ZEPHYR_BASE"] = self._zephyr_base
 
-        return dict(
+        args = dict(
             args=self._west_cmd
             + [
                 "debug",
@@ -612,3 +730,4 @@ class ZephyrDebugger(debugger.GdbDebugger):
             ],
             env=env,
         )
+        return args

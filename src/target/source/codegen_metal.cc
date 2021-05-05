@@ -47,7 +47,7 @@ CodeGenMetal::CodeGenMetal() {
   decl_stream << "#include <metal_stdlib>\n";
   decl_stream << "using namespace metal;\n\n";
   decl_stream << "union __TVMArgUnion {\n"
-              << " int v_int;\n"
+              << " int v_int[2];\n"
               << "};\n\n";
 }
 
@@ -102,6 +102,11 @@ void CodeGenMetal::AddFunction(const PrimFunc& f) {
       std::string vid = AllocVarID(v.get());
       std::ostringstream vref;
       if (v.dtype().bits() == 32) {
+        decl_stream << "  ";
+        PrintType(v.dtype(), decl_stream);
+        decl_stream << " " << vid << "[2];\n";
+        vref << varg << "." << vid << "[0]";
+      } else if (v.dtype().bits() == 64) {
         decl_stream << "  ";
         PrintType(v.dtype(), decl_stream);
         decl_stream << " " << vid << ";\n";
@@ -173,6 +178,17 @@ void CodeGenMetal::PrintType(DataType t, std::ostream& os) {  // NOLINT(*)
   }
   bool fail = false;
   if (t.is_float()) {
+    // Need to care about sizes and alignment of half3/float3 because tir representation might not
+    // be aware of Metal half3/float3 details and can treat them as just three elements,
+    // while sizes and alignmnents of half3/float3 are one element more (half3-8 bytes/
+    // float13 - 16bytes).
+    // Example of problematic pattern: filling of threadgroup packed array using float3 elements
+    // by threads concurrently can lead to datarace and wrong data in threadgroup shared array.
+    // packed_(half3/float3) are exactly datatypes dealing with 3 elements and per-element
+    // alignment
+    if (lanes == 3) {
+      os << "packed_";
+    }
     switch (t.bits()) {
       case 16:
         os << "half";

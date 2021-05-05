@@ -17,11 +17,15 @@
 # pylint: disable=invalid-name, unused-argument
 """Arm(R) Ethos(TM) -N NPU supported operators."""
 from enum import Enum
+
 import tvm.ir
-from ...dataflow_pattern import wildcard, is_op, is_constant
+from tvm.relay import transform
+from tvm.relay.build_module import bind_params_by_name
+
 from ... import qnn as _qnn
-from .register import register_pattern_table
+from ...dataflow_pattern import is_constant, is_op, wildcard
 from . import _ethosn as support
+from .register import register_pattern_table
 
 
 class Available(Enum):
@@ -42,12 +46,43 @@ def ethosn_available():
     return Available.SW_AND_HW if hw else Available.SW_ONLY
 
 
+def partition_for_ethosn(mod, params=None, **opts):
+    """Partition the graph greedily offloading supported
+    operators to Arm Ethos-N NPU.
+
+    Parameters
+    ----------
+    mod : Module
+        The module to run passes on.
+    params : Optional[Dict[str, NDArray]]
+        Constant input parameters.
+
+    Returns
+    -------
+    ret : annotated and partitioned module.
+    """
+    if params:
+        mod["main"] = bind_params_by_name(mod["main"], params)
+
+    seq = tvm.transform.Sequential(
+        [
+            transform.InferType(),
+            transform.MergeComposite(pattern_table()),
+            transform.AnnotateTarget("ethos-n"),
+            transform.MergeCompilerRegions(),
+            transform.PartitionGraph(),
+        ]
+    )
+
+    return seq(mod)
+
+
 @register_pattern_table("ethos-n")
 def pattern_table():
     """Get the Ethos-N compiler pattern table."""
 
     def qnn_conv_pattern():
-        pattern = is_op("nn.pad")(wildcard()) | wildcard()
+        pattern = is_op("nn.pad")(wildcard(), wildcard()) | wildcard()
         pattern = is_op("qnn.conv2d")(
             pattern, is_constant(), is_constant(), is_constant(), is_constant(), is_constant()
         )

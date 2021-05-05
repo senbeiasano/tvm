@@ -105,7 +105,9 @@ TEST(Relay, BuildModule) {
   }
   auto fgeneric = GenericFunc::Get("test.strategy_generic").set_default(*fs);
   (*reg)("add", "FTVMStrategy", fgeneric, 10);
-  (*reg)("add", "TShapeDataDependant", false, 10);
+  Array<Integer> dep;
+  dep.push_back(0);
+  (*reg)("add", "TShapeDataDependent", dep, 10);
   // build
   auto pfb = tvm::runtime::Registry::Get("relay.build_module._BuildModule");
   tvm::runtime::Module build_mod = (*pfb)();
@@ -121,16 +123,16 @@ TEST(Relay, BuildModule) {
   std::string json = json_f();
   tvm::runtime::Module mod = mod_f();
   // run
-  auto ctx = A->ctx;
-  auto pfr = tvm::runtime::Registry::Get("tvm.graph_runtime.create");
+  auto dev = A->device;
+  auto pfr = tvm::runtime::Registry::Get("tvm.graph_executor.create");
   ICHECK(mod.defined()) << "Module must be defined";
-  tvm::runtime::Module run_mod = (*pfr)(json, mod, (int)ctx.device_type, (int)ctx.device_id);
+  tvm::runtime::Module run_mod = (*pfr)(json, mod, (int)dev.device_type, (int)dev.device_id);
   auto set_input_f = run_mod.GetFunction("set_input_zero_copy", false);
   auto run_f = run_mod.GetFunction("run", false);
   auto get_output_f = run_mod.GetFunction("get_output", false);
-  set_input_f("a", &A.ToDLPack()->dl_tensor);
-  set_input_f("b", &B.ToDLPack()->dl_tensor);
-  set_input_f("c", &C.ToDLPack()->dl_tensor);
+  set_input_f("a", const_cast<DLTensor*>(A.operator->()));
+  set_input_f("b", const_cast<DLTensor*>(B.operator->()));
+  set_input_f("c", const_cast<DLTensor*>(C.operator->()));
   run_f();
   tvm::runtime::NDArray Y = get_output_f(0);
   auto pY = (float*)Y->data;
@@ -153,7 +155,7 @@ TEST(Relay, BuildModule) {
   for (int i = 0; i < 6; ++i) {
     pC2[i] = i + 4;
   }
-  set_input_f("c", &C2.ToDLPack()->dl_tensor);
+  set_input_f("c", const_cast<DLTensor*>(C2.operator->()));
   run_f();
   tvm::runtime::NDArray Y3 = get_output_f(0);
   auto pY3 = (float*)Y3->data;

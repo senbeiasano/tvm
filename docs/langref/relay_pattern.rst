@@ -167,6 +167,19 @@ The next example is matching a pattern of batch_norm -> get(0) -> relu. Note tha
         out = relay.nn.relu(tuple_get_item_node)
         pat.match(out)
 
+If we have a pattern that crosses a function boundary, we might want to match the Function itself
+
+
+.. code-block:: python
+
+  def test_match_func():
+      x = relay.var("x")
+      y = relay.var("y")
+      wc1 = wildcard()
+      wc2 = wildcard()
+      func_pattern = FunctionPattern([wc1, wc2], wc1 + wc2)
+      assert func_pattern.match(relay.Function([x, y], x + y))
+
 The next example is matching a constant node regarding its values. This is useful to check
 if a specific parameter in a subgraph has been bound or not.
 
@@ -217,6 +230,39 @@ The next example is matching function nodes with a specific attribute:
         f = relay.Function([x, y], x + y).with_attr("Composite", "add")
         assert pattern.match(f)
 
+A Relay ``If`` expression can be matched if all of its condition, true branch and false branch
+are matched:
+
+.. code-block:: python
+
+    def test_match_if():
+        x = is_var("x")
+        y = is_var("y")
+        pat = is_if(is_op("less")(x, y), x, y)
+
+        x = relay.var("x")
+        y = relay.var("y")
+        cond = x < y
+
+        assert pat.match(relay.expr.If(cond, x, y))
+
+
+A Relay ``Let`` expression can be matched if all of its variable, value, and body
+are matched:
+
+.. code-block:: python
+
+  def test_match_let():
+      x = is_var("x")
+      y = is_var("y")
+      let_var = is_var("let")
+      pat = is_let(let_var, is_op("less")(x, y), let_var)
+
+      x = relay.var("x")
+      y = relay.var("y")
+      lv = relay.var("let")
+      cond = x < y
+      assert pat.match(relay.expr.Let(lv, cond, lv))
 
 Matching Diamonds and Post-Dominator Graphs
 *******************************************
@@ -261,6 +307,22 @@ The final example is matching diamonds with a post-dominator relationship. We em
         assert diamond.match(out)
 
 
+Matching Fuzzy Patterns
+=======================
+
+The Dominator analysis above lets one match a subgraph of Relay AST that doesn't correspond to a set of patterns nodes exactly 1-to-1. There are a few other places where we support such "fuzzy" matching.
+
+Tuples, Functions, and Call nodes with any number of inputs can be matched by passing `None` as the argument value, i.e.::
+
+    tuple_pattern = is_tuple(None)
+    func_pattern = FunctionPattern(None, wildcard() + wildcard())
+    call_pattern = func_pattern(None)
+
+These patterns allow matching more generic classes patterns by constraining the use of the arguments rather than the number of arguments.
+
+Additionally, we support matching Functions with fuzzy bodies, i.e., a function body that is under constrained by the pattern. The pattern `FunctionPattern([is_var(), is_var()], wildcard() + wildcard()])` will match `relay.Function([x, y], x + y)`, but it will also match `relay.Function([x, y], x * x + y)`. In the second case, the pattern doesn't perfectly constrain the body of the function, so the resulting match is fuzzy.
+
+
 Pattern Language Design
 =======================
 
@@ -281,8 +343,11 @@ The high level design is to introduce a language of patterns for now we propose 
             | is_op(op_name)
             | is_tuple()
             | is_tuple_get_item(pattern, index = None)
+            | is_if(cond, tru, fls)
+            | is_let(var, value, body)
             | pattern1 `|` pattern2
             | dominates(parent_pattern, path_pattern, child_pattern)
+            | FunctionPattern(params, body)
 
 The above language then provides a matching interface with both can select sub-graphs as well as verify that the graph does match the pattern.
 
@@ -331,6 +396,21 @@ Domination
 **********
 
 Match child pattern, find a match for the parent pattern, insuring that the child ultimately dominates the parrent (i.e., no nodes outside the pattern use outputs of the parent), and that ever node betwen the child and the pattern matches the path pattern.
+
+Function Pattern
+****************
+
+Match a Function with a body and parameters
+
+If Pattern
+**********
+
+Match an If with condition, true branch, and false branch
+
+Let Pattern
+***********
+
+Match a Let with a variable, value, and body
 
 Applications
 ============

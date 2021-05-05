@@ -39,7 +39,7 @@ from .upsampling_python import upsampling_python, upsampling3d_python
 from .bilinear_resize_python import bilinear_resize_python
 from .trilinear_resize3d_python import trilinear_resize3d_python
 from .reorg_python import reorg_python
-from .roi_align_python import roi_align_nchw_python
+from .roi_align_python import roi_align_nchw_python, roi_align_nhwc_python
 from .roi_pool_python import roi_pool_nchw_python
 from .lrn_python import lrn_python
 from .l2_normalize_python import l2_normalize_python
@@ -49,8 +49,7 @@ from .strided_slice_python import strided_slice_python, strided_set_python
 from .batch_matmul import batch_matmul
 from .slice_axis_python import slice_axis_python
 from .sequence_mask_python import sequence_mask
-from .pool1d_python import pool1d_ncw_python
-from .pool3d_python import pool3d_ncdhw_python
+from .poolnd_python import poolnd_python
 from .pool_grad_python import pool_grad_nchw
 from .one_hot import one_hot
 from .depth_to_space import depth_to_space_python

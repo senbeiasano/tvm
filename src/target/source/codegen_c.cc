@@ -267,10 +267,10 @@ std::string CodeGenC::GetStructRef(DataType t, const PrimExpr& buffer, const Pri
         os << "dtype.lanes";
         break;
       case builtin::kArrDeviceId:
-        os << "ctx.device_id";
+        os << "device.device_id";
         break;
       case builtin::kArrDeviceType:
-        os << "ctx.device_type";
+        os << "device.device_type";
         break;
       default:
         LOG(FATAL) << "unknown field code";
@@ -525,7 +525,21 @@ void CodeGenC::VisitExpr_(const DivNode* op, std::ostream& os) {  // NOLINT(*)
   PrintBinaryExpr(op, "/", os, this);
 }
 void CodeGenC::VisitExpr_(const ModNode* op, std::ostream& os) {  // NOLINT(*)
-  PrintBinaryExpr(op, "%", os, this);
+  if (op->dtype.is_int() || op->dtype.is_uint()) {
+    PrintBinaryExpr(op, "%", os, this);
+  } else {
+    ICHECK(op->dtype.is_float()) << "Expected floating point or integer dtype in Mod, but got "
+                                 << op->dtype;
+    if (op->dtype.bits() == 32) {
+      PrintBinaryExpr(op, "fmodf", os, this);
+    } else if (op->dtype.bits() == 64) {
+      PrintBinaryExpr(op, "fmod", os, this);
+    } else {
+      ICHECK(false)
+          << "Non single or double precision floating point in Mod, expected 32 or 64 bits but got "
+          << op->dtype.bits() << " bits.";
+    }
+  }
 }
 void CodeGenC::VisitExpr_(const MinNode* op, std::ostream& os) {  // NOLINT(*)
   PrintBinaryExpr(op, "min", os, this);
@@ -728,7 +742,6 @@ void CodeGenC::VisitStmt_(const StoreNode* op) {
     ICHECK(is_one(op->predicate)) << "Predicated store is not supported";
     arith::PVar<PrimExpr> base;
 
-
     if (arith::ramp(base, 1, t.lanes()).Match(op->index)) {
       std::string value = this->PrintExpr(op->value);
       this->PrintVecStore(op->buffer_var.get(), t, base.Eval(), value);
@@ -899,6 +912,16 @@ void CodeGenC::VisitStmt_(const ForNode* op) {
   stream << "}\n";
 }
 
+void CodeGenC::VisitStmt_(const WhileNode* op) {
+  PrintIndent();
+  stream << "while (" << PrintExpr(op->condition) << ") {\n";
+  int while_scope = BeginScope();
+  PrintStmt(op->body);
+  this->EndScope(while_scope);
+  PrintIndent();
+  stream << "}\n";
+}
+
 void CodeGenC::VisitStmt_(const IfThenElseNode* op) {
   std::string cond = PrintExpr(op->condition);
   PrintIndent();
@@ -937,11 +960,19 @@ void CodeGenC::VisitStmt_(const EvaluateNode* op) {
       return;
     } else if (call->op.same_as(builtin::tvm_struct_set())) {
       ICHECK_EQ(call->args.size(), 4);
+      int kind = call->args[2].as<IntImmNode>()->value;
+      std::string ref = GetStructRef(call->args[3].dtype(), call->args[0], call->args[1], kind);
       std::string value = PrintExpr(call->args[3]);
-      std::string ref = GetStructRef(call->args[3].dtype(), call->args[0], call->args[1],
-                                     call->args[2].as<IntImmNode>()->value);
+      std::string cast;
+      if (kind == builtin::kArrStrides) {
+        // cast void* to int64_t*
+        cast = call->args[3]->dtype.is_handle() ? "(int64_t*)" : "";
+      } else if (kind == builtin::kArrDeviceType) {
+        // cast int to enum
+        cast = "(DLDeviceType)";
+      }
       this->PrintIndent();
-      this->stream << ref << " = " << value << ";\n";
+      this->stream << ref << " = " << cast << value << ";\n";
       return;
     }
   }

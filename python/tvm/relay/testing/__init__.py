@@ -22,9 +22,9 @@ import numpy as np
 
 import tvm
 from tvm import te
-import tvm.relay as relay
-import tvm.relay.op as op
-from tvm.relay import Prelude
+from tvm import relay
+from tvm.relay import op
+from tvm.relay.prelude import Prelude
 from tvm.testing import enabled_targets
 
 from . import mlp
@@ -133,8 +133,8 @@ def check_grad(
     if test_inputs is None:
         test_inputs = inputs
 
-    for target, ctx in enabled_targets():
-        intrp = relay.create_executor(ctx=ctx, target=target)
+    for target, dev in enabled_targets():
+        intrp = relay.create_executor(device=dev, target=target)
 
         # Get analytic gradients.
         _, grads = intrp.evaluate(bwd_func)(*inputs)

@@ -54,7 +54,7 @@ struct ExpandDimsAttrs : public tvm::AttrsNode<ExpandDimsAttrs> {
         "If `axis < 0`, it is the first axis inserted;"
         "If `axis >= 0`, it is the last axis inserted in Python's negative indexing.");
     TVM_ATTR_FIELD(num_newaxis)
-        .describe("Number of axises to be inserted. Should be >= 0.")
+        .describe("Number of axes to be inserted. Should be >= 0.")
         .set_lower_bound(0)
         .set_default(1);
   }
@@ -83,13 +83,9 @@ struct TransposeAttrs : public tvm::AttrsNode<TransposeAttrs> {
 /*! \brief Attributes used in reshape operators */
 struct ReshapeAttrs : public tvm::AttrsNode<ReshapeAttrs> {
   Array<Integer> newshape;
-  bool reverse;
   TVM_DECLARE_ATTRS(ReshapeAttrs, "relay.attrs.ReshapeAttrs") {
     TVM_ATTR_FIELD(newshape).describe(
         "The new shape. Should be compatible with the original shape.");
-    TVM_ATTR_FIELD(reverse)
-        .describe("Infer the special values from right to left if true")
-        .set_default(false);
   }
 };  // struct ReshapeAttrs
 
@@ -130,10 +126,11 @@ struct ScatterAddAttrs : public tvm::AttrsNode<ScatterAddAttrs> {
 };
 
 struct ScatterNDAttrs : public tvm::AttrsNode<ScatterNDAttrs> {
-  Array<Integer> out_shape;
+  String mode;
 
   TVM_DECLARE_ATTRS(ScatterNDAttrs, "relay.attrs.ScatterNDAttrs") {
-    TVM_ATTR_FIELD(out_shape).describe("Output shape of the scatter.");
+    TVM_ATTR_FIELD(mode).describe(
+        "Accumulation mode of the scatter, either \"update\" or \"add\".");
   }
 };
 
@@ -441,6 +438,34 @@ struct MatrixSetDiagAttrs : public tvm::AttrsNode<MatrixSetDiagAttrs> {
         .describe("Bool, true iff sub-diagonal is right aligned (left-padded).");
   }
 };  // struct MatrixSetDiagAttrs
+
+/*! \brief Attributes used in cumsum and cumprod operator */
+struct ScanopAttrs : public tvm::AttrsNode<ScanopAttrs> {
+  Integer axis;
+  DataType dtype;
+  Bool exclusive = Bool(false);
+  TVM_DECLARE_ATTRS(ScanopAttrs, "relay.attrs.ScanopAttrs") {
+    TVM_ATTR_FIELD(axis).describe("The axis to operate over").set_default(NullValue<Integer>());
+    TVM_ATTR_FIELD(dtype).describe("Output data type").set_default(NullValue<DataType>());
+
+    // Default is 0 which is "false"
+    TVM_ATTR_FIELD(exclusive)
+        .describe("The first element is not included")
+        .set_default(Bool(false));
+  }
+};
+
+/*! \brief Attributes used in unique operator */
+struct UniqueAttrs : public tvm::AttrsNode<UniqueAttrs> {
+  bool sorted;
+  bool return_counts;
+  TVM_DECLARE_ATTRS(UniqueAttrs, "relay.attrs.UniqueAttrs") {
+    TVM_ATTR_FIELD(sorted).describe("Whether the unique elements are sorted").set_default(true);
+    TVM_ATTR_FIELD(return_counts)
+        .describe("Whether to return an additional tensor with counts of each unique elements")
+        .set_default(false);
+  }
+};  // struct UniqueAttrs
 
 }  // namespace relay
 }  // namespace tvm

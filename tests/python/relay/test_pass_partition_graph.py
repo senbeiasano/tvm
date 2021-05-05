@@ -43,7 +43,7 @@ class WhiteListAnnotator:
         self.op_list = op_list
         self.compiler = compiler
 
-    def transform_function(self, func, mod, ctx):
+    def transform_function(self, func, mod, dev):
 
         annotator = self
 
@@ -173,7 +173,7 @@ class MobileNetAnnotator(ExprMutator):
 
 
 def check_result(
-    mod, map_inputs, out_shape, result, tol=1e-5, target="llvm", ctx=tvm.cpu(), params=None
+    mod, map_inputs, out_shape, result, tol=1e-5, target="llvm", device=tvm.cpu(), params=None
 ):
     if sys.platform == "win32":
         print("Skip test on Windows for now")
@@ -201,19 +201,19 @@ def check_result(
         code, lib = exe.save()
         lib = update_lib(lib)
         exe = runtime.vm.Executable.load_exec(code, lib)
-        vm = runtime.vm.VirtualMachine(exe, ctx)
+        vm = runtime.vm.VirtualMachine(exe, device)
         outs = vm.run(**map_inputs)
         outs = outs if isinstance(outs, runtime.container.ADT) else [outs]
         results = result if isinstance(result, list) else [result]
         for out, ref in zip(outs, results):
             tvm.testing.assert_allclose(out.asnumpy(), ref, rtol=tol, atol=tol)
 
-    def check_graph_runtime_result():
+    def check_graph_executor_result():
         compile_engine.get().clear()
         with tvm.transform.PassContext(opt_level=3):
             json, lib, param = relay.build(mod, target=target, params=params)
         lib = update_lib(lib)
-        rt_mod = tvm.contrib.graph_runtime.create(json, lib, ctx)
+        rt_mod = tvm.contrib.graph_executor.create(json, lib, device)
 
         for name, data in map_inputs.items():
             rt_mod.set_input(name, data)
@@ -224,12 +224,12 @@ def check_result(
         results = result if isinstance(result, list) else [result]
 
         for idx, shape in enumerate(out_shapes):
-            out = tvm.nd.empty(shape, ctx=ctx)
+            out = tvm.nd.empty(shape, device=device)
             out = rt_mod.get_output(idx, out)
             tvm.testing.assert_allclose(out.asnumpy(), results[idx], rtol=tol, atol=tol)
 
     check_vm_result()
-    check_graph_runtime_result()
+    check_graph_executor_result()
 
 
 def test_multi_node_compiler():
@@ -273,25 +273,29 @@ def test_multi_node_compiler():
 
     map_inputs = {"w{}".format(i): w_data[i] for i in range(8)}
     map_inputs["x"] = x_data
-    check_result(
-        mod,
-        map_inputs,
-        (30, 10),
-        np.concatenate(
-            (
-                ((x_data + w_data[0]) - w_data[1]) * w_data[2],
-                ((x_data + w_data[3]) - w_data[4]) * w_data[5],
-                x_data + w_data[6] - w_data[7],
+
+    targets = ["llvm", "c -runtime=c --system-lib"]
+    for tgt in targets:
+        check_result(
+            mod,
+            map_inputs,
+            (30, 10),
+            np.concatenate(
+                (
+                    ((x_data + w_data[0]) - w_data[1]) * w_data[2],
+                    ((x_data + w_data[3]) - w_data[4]) * w_data[5],
+                    x_data + w_data[6] - w_data[7],
+                ),
+                axis=0,
             ),
-            axis=0,
-        ),
-    )
+            target=tgt,
+        )
 
 
 def test_extern_ccompiler_single_op():
     @transform.function_pass(opt_level=0)
     class MyAnnotator:
-        def transform_function(self, func, mod, ctx):
+        def transform_function(self, func, mod, dev):
             class Annotator(tvm.relay.ExprMutator):
                 def visit_call(self, call):
                     new_args = []
@@ -452,7 +456,7 @@ def test_extern_dnnl():
     i_data = np.random.uniform(0, 1, ishape).astype(dtype)
     w1_data = np.random.uniform(0, 1, w1shape).astype(dtype)
 
-    ref_ex = relay.create_executor("graph", mod=ref_mod, ctx=tvm.cpu())
+    ref_ex = relay.create_executor("graph", mod=ref_mod, device=tvm.cpu())
     ref_res = ref_ex.evaluate()(i_data, w1_data)
     check_result(
         mod, {"data": i_data, "weight1": w1_data}, (1, 32, 14, 14), ref_res.asnumpy(), tol=1e-5
@@ -472,7 +476,7 @@ def test_extern_dnnl_mobilenet():
     mod = transform.PartitionGraph()(mod)
     i_data = np.random.uniform(0, 1, ishape).astype(dtype)
 
-    ref_ex = relay.create_executor("graph", mod=ref_mod, ctx=tvm.cpu(0))
+    ref_ex = relay.create_executor("graph", mod=ref_mod, device=tvm.cpu(0))
     ref_res = ref_ex.evaluate()(i_data, **params)
     compile_engine.get().clear()
 
@@ -913,7 +917,7 @@ def test_dnnl_fuse():
     def test_exec(mod, params, ref_mod, ref_params, out_shape):
         ishape = (1, 3, 224, 224)
         i_data = np.random.randn(*ishape).astype(np.float32)
-        ref_ex = relay.create_executor("graph", mod=ref_mod, ctx=tvm.cpu(0))
+        ref_ex = relay.create_executor("graph", mod=ref_mod, device=tvm.cpu(0))
         ref_res = ref_ex.evaluate()(i_data, **ref_params)
         compile_engine.get().clear()
 

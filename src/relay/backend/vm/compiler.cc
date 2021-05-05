@@ -33,8 +33,8 @@
 #include <tvm/relay/interpreter.h>
 #include <tvm/relay/qnn/transform.h>
 #include <tvm/relay/transform.h>
+#include <tvm/runtime/logging.h>
 #include <tvm/runtime/vm/vm.h>
-#include <tvm/support/logging.h>
 #include <tvm/te/operation.h>
 
 #include <iostream>
@@ -57,12 +57,6 @@ namespace transform {
 
 Pass LambdaLift();
 Pass InlinePrimitives();
-
-Pass ManifestAlloc(Target target_host, vm::TargetsMap targets) {
-  auto f = tvm::runtime::Registry::Get("relay.transform.ManifestAlloc");
-  ICHECK(f != nullptr) << "unable to load allocation manifestation pass";
-  return (*f)(target_host, targets);
-}
 
 Pass MemoryPlan() {
   auto f = tvm::runtime::Registry::Get("relay.transform.MemoryPlan");
@@ -261,9 +255,11 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
         context_(context),
         target_host_(target_host),
         expr_device_map_(std::move(expr_device_map)) {
+    CheckAndUpdateHostConsistency(&targets, &target_host);
     for (const auto& it : targets) {
       targets_[it.first->value] = it.second;
     }
+    target_host_ = target_host;
   }
 
   VMFunction Compile(const GlobalVar& var, const Function& func) {
@@ -382,11 +378,16 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     CompileMatch(match);
   }
 
-  void VisitExpr_(const LetNode* let_node) {
-    DLOG(INFO) << PrettyPrint(let_node->value);
-    this->VisitExpr(let_node->value);
-    var_register_map_.insert({let_node->var, this->last_register_});
-    this->VisitExpr(let_node->body);
+  void VisitExpr_(const LetNode* l) final {
+    Expr let_binding = GetRef<Expr>(l);
+    const LetNode* let;
+    while ((let = let_binding.as<LetNode>())) {
+      VisitExpr(let->value);
+      var_register_map_.insert({let->var, this->last_register_});
+      let_binding = let->body;
+    }
+
+    VisitExpr(let_binding);
   }
 
   void VisitExpr_(const TupleGetItemNode* get_node) {
@@ -898,18 +899,10 @@ void VMCompiler::SetParam(const std::string& name, runtime::NDArray data_in) {
 }
 
 void VMCompiler::Lower(IRModule mod, const TargetsMap& targets, const tvm::Target& target_host) {
-  if (params_.size()) {
-    BaseFunc base_func = mod->Lookup("main");
-    ICHECK(base_func->IsInstance<FunctionNode>())
-        << "VM compiler expects to compile relay::Function";
-    auto f = relay::backend::BindParamsByName(Downcast<Function>(base_func), params_);
-    auto gvar = mod->GetGlobalVar("main");
-    mod->Add(gvar, f);
-  }
-
   exec_ = make_object<Executable>();
   targets_ = targets;
   target_host_ = target_host;
+  CheckAndUpdateHostConsistency(&targets_, &target_host_);
 
   // Run the optimizations necessary to target the VM.
   context_.module = OptimizeModule(mod, targets_, target_host_);
@@ -985,8 +978,11 @@ transform::Sequential MemoryOpt(tvm::Target host_target, TargetsMap targets) {
   // Fuse the shape functions.
   pass_seqs.push_back(transform::FuseOps());
 
-  // Perform memory planning in order to coalesce/reduce allocations.
-  pass_seqs.push_back(transform::MemoryPlan());
+  // TODO(mbrookhart, jroesch, masahi): this pass is very slow, and is
+  // incomplete to provide memory resuse optimizations. Disable it until we can
+  // rewrite it in C++ and complete it.
+  // // Perform memory planning in order to coalesce/reduce allocations.
+  // pass_seqs.push_back(transform::MemoryPlan());
 
   // Compute away constant computation introduced by coalescing allocations.
   pass_seqs.push_back(transform::FoldConstant());
@@ -1008,8 +1004,20 @@ transform::Sequential MemoryOpt(tvm::Target host_target, TargetsMap targets) {
   return transform::Sequential(pass_seqs);
 }
 
-IRModule VMCompiler::OptimizeModule(const IRModule& mod, const TargetsMap& targets,
-                                    const Target& target_host) {
+IRModule VMCompiler::OptimizeModule(IRModule mod, const TargetsMap& targets_arg,
+                                    const Target& target_host_arg) {
+  TargetsMap targets = targets_arg;
+  Target target_host = target_host_arg;
+  CheckAndUpdateHostConsistency(&targets, &target_host);
+  if (params_.size()) {
+    BaseFunc base_func = mod->Lookup("main");
+    ICHECK(base_func->IsInstance<FunctionNode>())
+        << "VM compiler expects to compile relay::Function";
+    auto f = relay::backend::BindParamsByName(Downcast<Function>(base_func), params_);
+    auto gvar = mod->GetGlobalVar("main");
+    mod->Add(gvar, f);
+  }
+
   Array<Pass> pass_seqs;
   Array<runtime::String> entry_functions{"main"};
   pass_seqs.push_back(transform::RemoveUnusedFunctions(entry_functions));
@@ -1069,6 +1077,23 @@ IRModule VMCompiler::OptimizeModule(const IRModule& mod, const TargetsMap& targe
   }
 
   pass_seqs.push_back(transform::FuseOps());
+  // Do layout rewrite for auto-scheduler.
+  transform::PassContext pass_ctx = PassContext::Current();
+  if (backend::IsAutoSchedulerEnabled() && targets.size() == 1) {
+    const auto& target = (*targets.begin()).second;
+    Pass major_pass = transform::AutoSchedulerLayoutRewrite();
+    bool enable_layout_rewrite_targets =
+        target->kind->device_type == kDLCPU || target->GetAttr<String>("device", "") == "mali";
+    if (enable_layout_rewrite_targets && pass_ctx.PassEnabled(major_pass->Info())) {
+      With<Target> tctx(target);
+      pass_seqs.push_back(major_pass);
+      // Defuse ops to fold constants, then fuse them again
+      pass_seqs.push_back(transform::DefuseOps());
+      pass_seqs.push_back(transform::FoldConstant());
+      pass_seqs.push_back(transform::FuseOps());
+    }
+  }
+
   pass_seqs.push_back(transform::ToANormalForm());
   pass_seqs.push_back(transform::InferType());
   pass_seqs.push_back(transform::LambdaLift());
@@ -1085,7 +1110,6 @@ IRModule VMCompiler::OptimizeModule(const IRModule& mod, const TargetsMap& targe
   pass_seqs.push_back(transform::InferType());
 
   transform::Sequential seq(pass_seqs);
-  transform::PassContext pass_ctx = PassContext::Current();
   tvm::With<relay::transform::PassContext> ctx(pass_ctx);
   if (targets.size() == 1) {
     const auto& it = targets.begin();
@@ -1137,24 +1161,24 @@ void VMCompiler::Codegen() {
 
   auto compile_engine = CompileEngine::Global();
   auto ext_mods = compile_engine->LowerExternalFunctions();
+  runtime::Module lib;
   if (funcs.size() > 0) {
     Map<String, IRModule> build_funcs;
     for (const auto& i : funcs) {
       build_funcs.Set(i.first, i.second);
     }
-    exec_->lib = tvm::build(build_funcs, target_host_);
+    lib = tvm::build(build_funcs, target_host_);
   } else {
     // There is no function handled by TVM. We create a virtual main module
     // to make sure a DSO module will be also available.
-    exec_->lib = codegen::CSourceModuleCreate(";", "");
+    lib = codegen::CSourceModuleCreate(";", "", Array<String>{});
   }
-  if (!ext_mods.empty()) {
-    exec_->lib = codegen::CreateMetadataModule(params_, exec_->lib, ext_mods);
-  }
+  lib = codegen::CreateMetadataModule(params_, lib, ext_mods, target_host_);
+  exec_->SetLib(lib);
 }
 
 ExprDeviceMap VMCompiler::AnalyzeContext() const {
-  TVMContext default_device;
+  Device default_device;
   ExprDeviceMap expr_device_map;
   if (targets_.size() > 1) {
     int fallback_dev = GetFallbackDevice();

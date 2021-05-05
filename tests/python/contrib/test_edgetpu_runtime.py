@@ -65,13 +65,13 @@ def skipped_test_tflite_runtime():
         tflite_output = interpreter.get_tensor(output_details[0]["index"])
 
         # inference via remote tvm tflite runtime
-        server = rpc.Server("localhost")
+        server = rpc.Server("127.0.0.1")
         remote = rpc.connect(server.host, server.port)
-        ctx = remote.cpu(0)
+        dev = remote.cpu(0)
 
         with open(tflite_model_path, "rb") as model_fin:
-            runtime = tflite_runtime.create(model_fin.read(), ctx)
-            runtime.set_input(0, tvm.nd.array(tflite_input, ctx))
+            runtime = tflite_runtime.create(model_fin.read(), dev)
+            runtime.set_input(0, tvm.nd.array(tflite_input, dev))
             runtime.invoke()
             out = runtime.get_output(0)
             np.testing.assert_equal(out.asnumpy(), tflite_output)

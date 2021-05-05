@@ -27,7 +27,7 @@ This page is organized as follows:
 - The `Logical Architecture Components`_ section describes the logical components.
   The sections after are specific guides focused on each logical component, organized
   by the component's name.
-- Feel free to also checkout the :ref:`dev-how-to` for useful development tips.
+- Feel free to also check out the :ref:`dev-how-to` for useful development tips.
 
 This guide provides a few complementary views of the architecture.
 First, we review a single end-to-end compilation flow and discuss the key data structures and the transformations.
@@ -42,14 +42,14 @@ In this guide, we will study an example compilation flow in the compiler. The fi
 
 - Import: The frontend component ingests a model into an IRModule, which contains a collection of functions that internally represent the model.
 - Transformation: The compiler transforms an IRModule to another functionally equivalent or approximately
-  equivalent(e.g. in the case of quantization) IRModule. Many of the transformatons are target (backend) independent.
+  equivalent(e.g. in the case of quantization) IRModule. Many of the transformations are target (backend) independent.
   We also allow target to affect the configuration of the transformation pipeline.
 - Target Translation: The compiler translates(codegen) the IRModule to an executable format specified by the target.
   The target translation result is encapsulated as a `runtime.Module` that can be exported, loaded, and executed on the target runtime environment.
 - Runtime Execution: the user loads back a `runtime.Module` and runs the compiled functions in the supported runtime environment.
 
 
-.. figure:: https://raw.githubusercontent.com/tvmai/web-data/main/images/design/tvm_dyn_workflow.svg
+.. figure:: https://raw.githubusercontent.com/tlc-pack/web-data/main/images/design/tvm_dyn_workflow.svg
    :align: center
    :width: 85%
 
@@ -94,7 +94,7 @@ This process helps us to divide the original problem into two sub-problems:
 We use the low-level tir phase to compile and optimize each sub-functions. For specific targets, we may also directly go to the target translation
 phase and use external code generators.
 
-There are a few different ways(in relay/backend) to handle the calls into the overall execution problem. For simple models with known shapes and no control flow, we can lower to a graph runtime that stores the execution structure in a graph. We also support a virtual machine backend for dynamic executions. Finally, we plan to support ahead of time compilation that compiles the high-level execution structure into the executable and generated primitive functions. All of these execution modes are encapsulated by a unified **runtime.Module** interface, which we will discuss in the latter part of the guide.
+There are a few different ways(in relay/backend) to handle the calls into the overall execution problem. For simple models with known shapes and no control flow, we can lower to a graph executor that stores the execution structure in a graph. We also support a virtual machine backend for dynamic executions. Finally, we plan to support ahead of time compilation that compiles the high-level execution structure into the executable and generated primitive functions. All of these execution modes are encapsulated by a unified **runtime.Module** interface, which we will discuss in the latter part of the guide.
 
 **tir/transform** contains transformation passes for TIR level functions. Many tir passes serve the purpose of lowering. For example, there are passes to flatten multi-dimensional access to one-dimensional pointer access, to expand the intrinsics into target-specific ones, and to decorate the function entry to meet the runtime calling convention. Of course, there are also optimizations passes, such as access index simplification and dead code elimination.
 
@@ -103,7 +103,7 @@ Many low-level optimizations can be handled in the target phase by the LLVM, CUD
 Search-space and Learning-based Transformations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The transformation passes we described so far are deterministic and rule-based. One design goal of the TVM stack is to support high-performance code optimizations for different hardware platforms. To do so, we will need to investigate as many optimizations choices as possible, including but not limited to, multi-dimensional tensor access, loop tiling behavior, special accelerator memory hierarchy, and threading.
+The transformation passes we described so far are deterministic and rule-based. One design goal of the TVM stack is to support high-performance code optimizations for different hardware platforms. To do so, we will need to investigate as many optimization choices as possible, including but not limited to, multi-dimensional tensor access, loop tiling behavior, special accelerator memory hierarchy, and threading.
 
 It is hard to define a heuristic to make all of the choices. Instead, we will take a search and learning-based approach.
 We first define a collection of actions we can take to transform a program. Example actions include loop transformations, inlining,
@@ -144,7 +144,7 @@ The main goal of TVM's runtime is to provide a minimal API for loading and execu
     import tvm
     # Example runtime execution program in python, with type annotated
     mod: tvm.runtime.Module = tvm.runtime.load_module("compiled_artifact.so")
-    arr: tvm.runtime.NDArray = tvm.nd.array([1, 2, 3], ctx=tvm.gpu(0))
+    arr: tvm.runtime.NDArray = tvm.nd.array([1, 2, 3], device=tvm.gpu(0))
     fun: tvm.runtime.PackedFunc = mod["addone"]
     fun(a)
     print(a.asnumpy())
@@ -201,7 +201,7 @@ except that the data structure of interest changes from the numpy.ndarray to tvm
 Logical Architecture Components
 -------------------------------
 
-.. figure:: https://raw.githubusercontent.com/tvmai/web-data/main/images/design/tvm_static_overview.svg
+.. figure:: https://raw.githubusercontent.com/tlc-pack/web-data/main/images/design/tvm_static_overview.svg
    :align: center
    :width: 85%
 
@@ -396,3 +396,11 @@ Security
    :maxdepth: 1
 
    security
+
+
+microTVM
+--------
+.. toctree::
+   :maxdepth: 1
+
+   microtvm_design

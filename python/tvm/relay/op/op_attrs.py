@@ -304,6 +304,11 @@ class NonMaximumSuppressionAttrs(Attrs):
     """Attributes for vision.non_maximum_suppression"""
 
 
+@tvm._ffi.register_object("relay.attrs.AllClassNonMaximumSuppressionAttrs")
+class AllClassNonMaximumSuppressionAttrs(Attrs):
+    """Attributes for vision.all_classnon_maximum_suppression"""
+
+
 @tvm._ffi.register_object("relay.attrs.ROIAlignAttrs")
 class ROIAlignAttrs(Attrs):
     """Attributes for vision.roi_align"""
@@ -552,3 +557,8 @@ class SpaceToBatchNDAttrs(Attrs):
 @tvm._ffi.register_object("relay.attrs.BatchToSpaceNDAttrs")
 class BatchToSpaceNDAttrs(Attrs):
     """Attributes used in BatchToSpaceNDAttrs operators"""
+
+
+@tvm._ffi.register_object("relay.attrs.ThreefryGenerateAttrs")
+class ThreefryGenerateAttrs(Attrs):
+    """Attributes used in ThreefryGenerateAttrs operators"""

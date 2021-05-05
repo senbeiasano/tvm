@@ -25,7 +25,7 @@
 #define TVM_RUNTIME_DATA_TYPE_H_
 
 #include <tvm/runtime/c_runtime_api.h>
-#include <tvm/support/logging.h>
+#include <tvm/runtime/logging.h>
 
 #include <string>
 #include <type_traits>
@@ -126,8 +126,8 @@ class DataType {
   DataType element_of() const { return with_lanes(1); }
   /*!
    * \brief Equal comparator.
-   * \param other The data type to compre against.
-   * \return The comparison resilt.
+   * \param other The data type to compare against.
+   * \return The comparison result.
    */
   bool operator==(const DataType& other) const {
     return data_.code == other.data_.code && data_.bits == other.data_.bits &&
@@ -135,8 +135,8 @@ class DataType {
   }
   /*!
    * \brief NotEqual comparator.
-   * \param other The data type to compre against.
-   * \return The comparison resilt.
+   * \param other The data type to compare against.
+   * \return The comparison result.
    */
   bool operator!=(const DataType& other) const { return !operator==(other); }
   /*!
@@ -160,12 +160,19 @@ class DataType {
    */
   static DataType UInt(int bits, int lanes = 1) { return DataType(kDLUInt, bits, lanes); }
   /*!
-   * \brief Construct an uint type.
+   * \brief Construct an float type.
    * \param bits The number of bits in the type.
    * \param lanes The number of lanes
    * \return The constructed data type.
    */
   static DataType Float(int bits, int lanes = 1) { return DataType(kDLFloat, bits, lanes); }
+  /*!
+   * \brief Construct an bfloat type.
+   * \param bits The number of bits in the type.
+   * \param lanes The number of lanes
+   * \return The constructed data type.
+   */
+  static DataType BFloat(int bits, int lanes = 1) { return DataType(kDLBfloat, bits, lanes); }
   /*!
    * \brief Construct a bool type.
    * \param lanes The number of lanes

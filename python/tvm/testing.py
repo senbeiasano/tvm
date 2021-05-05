@@ -56,6 +56,8 @@ function in this module. Then targets using this node should be added to the
 """
 import logging
 import os
+import sys
+import time
 import pytest
 import numpy as np
 import tvm
@@ -74,6 +76,9 @@ def assert_allclose(actual, desired, rtol=1e-7, atol=1e-7):
     compares the `abs(actual-desired)` with `atol+rtol*abs(desired)`.  Since we
     often allow `desired` to be close to zero, we generally want non-zero `atol`.
     """
+    actual = np.asanyarray(actual)
+    desired = np.asanyarray(desired)
+    np.testing.assert_allclose(actual.shape, desired.shape)
     np.testing.assert_allclose(actual, desired, rtol=rtol, atol=atol, verbose=True)
 
 
@@ -370,7 +375,7 @@ def _get_targets():
         if len(dev) == 0:
             continue
         target_kind = dev.split()[0]
-        if tvm.runtime.enabled(target_kind) and tvm.context(target_kind, 0).exist:
+        if tvm.runtime.enabled(target_kind) and tvm.device(target_kind, 0).exist:
             targets.add(dev)
     if len(targets) == 0:
         logging.warning(
@@ -445,7 +450,7 @@ def enabled_targets():
     targets: list
         A list of pairs of all enabled devices and the associated context
     """
-    return [(tgt, tvm.context(tgt)) for tgt in _get_targets()]
+    return [(tgt, tvm.device(tgt)) for tgt in _get_targets()]
 
 
 def _compose(args, decs):
@@ -507,6 +512,25 @@ def requires_cuda(*args):
         *requires_gpu(),
     ]
     return _compose(args, _requires_cuda)
+
+
+def requires_cudagraph(*args):
+    """Mark a test as requiring the CUDA Graph Feature
+
+    This also marks the test as requiring cuda
+
+    Parameters
+    ----------
+    f : function
+        Function to mark
+    """
+    _requires_cudagraph = [
+        pytest.mark.skipif(
+            not nvcc.have_cudagraph(), reason="CUDA Graph is not supported in this environment"
+        ),
+        *requires_cuda(),
+    ]
+    return _compose(args, _requires_cudagraph)
 
 
 def requires_opencl(*args):
@@ -679,7 +703,7 @@ def parametrize_targets(*args):
     Parameters
     ----------
     f : function
-        Function to parametrize. Must be of the form `def test_xxxxxxxxx(target, ctx)`:,
+        Function to parametrize. Must be of the form `def test_xxxxxxxxx(target, dev)`:,
         where `xxxxxxxxx` is any name.
     targets : list[str], optional
         Set of targets to run against. If not supplied,
@@ -688,23 +712,23 @@ def parametrize_targets(*args):
     Example
     -------
     >>> @tvm.testing.parametrize
-    >>> def test_mytest(target, ctx):
+    >>> def test_mytest(target, dev):
     >>>     ...  # do something
 
     Or
 
     >>> @tvm.testing.parametrize("llvm", "cuda")
-    >>> def test_mytest(target, ctx):
+    >>> def test_mytest(target, dev):
     >>>     ...  # do something
     """
 
     def wrap(targets):
         def func(f):
             params = [
-                pytest.param(target, tvm.context(target, 0), marks=_target_to_requirement(target))
+                pytest.param(target, tvm.device(target, 0), marks=_target_to_requirement(target))
                 for target in targets
             ]
-            return pytest.mark.parametrize("target,ctx", params)(f)
+            return pytest.mark.parametrize("target,dev", params)(f)
 
         return func
 
@@ -712,6 +736,32 @@ def parametrize_targets(*args):
         targets = [t for t, _ in enabled_targets()]
         return wrap(targets)(args[0])
     return wrap(args)
+
+
+def identity_after(x, sleep):
+    """Testing function to return identity after sleep
+
+    Parameters
+    ----------
+    x : int
+        The input value.
+
+    sleep : float
+        The amount of time to sleep
+
+    Returns
+    -------
+    x : object
+        The original value
+    """
+    if sleep:
+        time.sleep(sleep)
+    return x
+
+
+def terminate_self():
+    """Testing function to terminate the process."""
+    sys.exit(-1)
 
 
 tvm._ffi._init_api("testing", __name__)
